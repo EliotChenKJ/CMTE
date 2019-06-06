@@ -122,22 +122,23 @@ class MultihalfModel(BaseModel):
         self.loss_D.backward()       # calculate gradients of network D w.r.t. loss_D
 
     def backward_G(self):
-        """Calculate GAN loss for generator"""
-        # calculate loss given the gan generator
-        # first, calculate the gan generator's loss
-        pred_fake, cF = self.netD(self.fake_ref)
-        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
-        # print(cF, self.real_label)
-        self.loss_G_C = self.criterionBCE(cF, self.real_label)
-        # second, calculate the G l1 loss
+        if self.opt.lambda_style != 0:
+            style_targets = [GramMatrix()(A).detach() for A in self.vgg(self.real_ref, self.style_layers)]
+            out = self.vgg(self.fake_ref, self.style_layers)
+            layer_losses = [self.style_weights[a] * self.loss_fns[a](A, style_targets[a]) for a, A in enumerate(out)]
+            # print(layer_losses)
+            self.style_loss = sum(layer_losses)
+            self.style_loss.backward(retain_graph=True)
+
         self.loss_G_L1 = self.criterionL1(self.fake_ref, self.real_ref) * self.opt.lambda_L1
-        # then, calculate the style loss
-        style_out = self.vgg(self.fake_ref, self.style_layers)
-        style_targets = [GramMatrix()(layer_out).detach() for layer_out in self.vgg(self.real_ref, self.style_layers)]
-        self.loss_Style = sum([self.criterionStyle[i](i_out, style_targets[i]) * self.style_weights[i] for i, i_out in enumerate(style_out)])
-        # calculate the all loss
-        self.loss_G = self.loss_G_GAN + self.loss_G_L1 + self.loss_Style + self.loss_G_C
-        # finally, get the gradients for generators' parameters
+
+        # First, G(A) should fake the discriminator
+        pred_fake, cF = self.netD(self.fake_ref.clone())
+        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+
+        self.loss_G_C = self.criterionBCE(cF, self.real_label)
+        self.loss_G = self.loss_G_GAN + self.loss_G_C + self.loss_G_L1
+
         self.loss_G.backward()
         
     def optimize_parameters(self):
