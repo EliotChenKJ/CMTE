@@ -1,0 +1,1 @@
+python test.py --dataroot ./datasets/half-5-exp/ --mode multihalf --dataset_mode test --name ex8_exp_2 --gpu_ids 0 --num_test 104 --n_pic 8 --n_cont 13

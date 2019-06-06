@@ -1,0 +1,1 @@
+python train.py --dataroot ./datasets/half-5-exp/ --mode half --dataset_mode half --name ex9_pure_exp --gpu_ids 3 --display_port 8103 --batch_size 1

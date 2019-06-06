@@ -1,0 +1,1 @@
+python train.py --dataroot ./datasets/half-5-exp/ --mode multihalf --dataset_mode multihalfex --name ex10_exp --gpu_ids 0 --batch_size 1 --n_pic 8 --display_freq 3200 --print_freq 320 --display_port 8100 --lambda_style 3.e3
