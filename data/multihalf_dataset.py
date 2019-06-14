@@ -22,6 +22,7 @@ class MultihalfDataset(BaseDataset):
         """
         parser.add_argument('--K', type=int, default=256, help='sample\'s cropped size')
         parser.add_argument('--n_pic', type=int, default=3, help='number of style pictures')
+        parser.add_argument('--n_cross', type=int, default=1, help='number of cross-train images')
         parser.set_defaults(preprocess='no', no_flip=True)  # specify dataset-specific default values
         return parser
 
@@ -42,7 +43,6 @@ class MultihalfDataset(BaseDataset):
         self.image_dir = os.path.join(self.opt.dataroot, self.opt.phase)
         self.image_paths = sorted(make_dataset(self.image_dir))
         self.image_size = len(self.image_paths) # get the dataset size
-        assert self.image_size == self.opt.n_pic
         self.K = self.opt.K
 
         BtoA = (self.opt.direction == 'BtoA')
@@ -60,11 +60,12 @@ class MultihalfDataset(BaseDataset):
         Returns:
             a dictionary of data with their names. It usually contains the data itself and its metadata information.
         """
-        train_index = index % (self.image_size * 2)
+        train_index = index % (self.image_size + self.opt.n_cross)
         if self.opt.isTrain:
             # get data_A(Content) / data_B(style) / data_Ref
             if train_index < self.image_size:
-                path_Ref = self.image_paths[train_index]        # get a random image path
+                style_index = train_index
+                path_Ref = self.image_paths[style_index]        # get a random image path
                 path_A = path_Ref
                 path_B = path_Ref
                 data_Ref = Image.open(path_Ref).convert('RGB')    # needs to be a tensor
@@ -81,10 +82,13 @@ class MultihalfDataset(BaseDataset):
                 rh = random.randint(0, int(h / 2))
                 data_A = data_Ref.crop((rw, rh, int(rw + w / 2), int(rh + h / 2)))
                 data_B = data_A.copy()
+                # data_B = data_A.copy()
             else:
                 path_A = self.image_paths[train_index % self.image_size]
                 data_A = Image.open(path_A).convert('RGB')
-                path_B = self.image_paths[(train_index + random.randint(1, self.image_size - 1)) % self.image_size]
+                
+                style_index = (train_index + random.randint(1, self.image_size - 1)) % self.image_size
+                path_B = self.image_paths[style_index]
                 data_B = Image.open(path_B).convert('RGB')
                 path_Ref = path_B
                 
@@ -105,24 +109,14 @@ class MultihalfDataset(BaseDataset):
                 data_B = data_Ref.crop((rw, rh, int(rw + w / 2),  int(rh + h / 2)))
                 data_A = data_A.crop((rw, rh, int(rw + w / 2),  int(rh + h / 2)))
         else:
-            path_A = self.image_paths[train_index % self.image_size]
-            data_A = Image.open(path_A).convert('RGB')
-            path_B = self.image_paths[train_index % self.image_size]
-            data_B = Image.open(path_B).convert('RGB')
-            path_Ref = self.image_paths[train_index % self.image_size]
-            data_Ref = Image.open(path_Ref).convert('RGB')
-            # w, h = data_B.size
-            # rw = random.randint(0, w - self.opt.test_size)
-            # rh = random.randint(0, h - self.opt.test_size)
-            # data_A = data_B.crop((0, 0, w, h))
-            # data_B = data_A.crop((0, 0, self.opt.test_size, self.opt.test_size))
-            
+            print("we do not use this model for test.")
+            return 
         # transform data_A and data_B to it standard form 
         data_A = self.transform(data_A)
         data_B = self.transform(data_B)
         data_Ref = self.transform(data_Ref)
         label_style = torch.Tensor(self.opt.n_pic).zero_()
-        label_style[train_index % self.image_size] = 1
+        label_style[style_index] = 1
         
         return {'A': data_A, 'B': data_B, 'Ref': data_Ref,
                 'A_paths': path_A, 'B_paths':path_B, 'Ref_paths':path_Ref,
@@ -130,7 +124,8 @@ class MultihalfDataset(BaseDataset):
 
     def __len__(self):
         """Return the total number of images."""
-        return self.image_size * 2
+        return self.image_size + self.opt.n_cross
     
     def name(self):
         return 'MultihalfDataset'
+
