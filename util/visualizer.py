@@ -173,8 +173,6 @@ class Visualizer():
             # update website
             webpage = html.HTML(self.web_dir, 'Experiment name = %s' % self.name, refresh=10)
             if self.opt.dataset_mode == 'multihalf':
-                web_epoch_ref = int(-self.opt.display_freq / (self.opt.n_pic ** 2))
-            else:
                 web_epoch_ref = int(-self.opt.display_freq / (self.opt.n_pic))
             for n in range(epoch, 0, web_epoch_ref):
                 webpage.add_header('epoch [%d]' % n)
