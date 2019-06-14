@@ -149,6 +149,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = Resnet2xGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == 'multi_resnet_2x_6blocks':
         net = MultiResnet2xGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == 'multi_vgg_2x_6blocks':
+        net = MultiVgg2xGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % netG)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -452,6 +454,159 @@ class MultiResnet2xGenerator(nn.Module):
         """Standard forward"""
         encoded_style = self.encoder(style)
         encoded_content = self.encoder(content)
+        insp_out = self.insp(encoded_content, self.gram(encoded_style))
+        return self.decoder(insp_out)
+
+class MultiVgg2xGenerator(nn.Module):
+    """
+    Resnet-based generator that consists of Resnet blocks between a few downsampling/upsampling operations.
+
+    This is the modified generator of single texture synthesis.
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        """Construct a Resnet-based generator
+
+        Parameters:
+            input_nc (int)      -- the number of channels in input images
+            output_nc (int)     -- the number of channels in output images
+            ngf (int)           -- the number of filters in the last conv layer
+            norm_layer          -- normalization layer
+            use_dropout (bool)  -- if use dropout layers
+            n_blocks (int)      -- the number of ResNet blocks
+            padding_type (str)  -- the name of padding layer in conv layers: reflect | replicate | zero
+        """
+        assert(n_blocks >= 0)
+        super(MultiVgg2xGenerator, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        n_downsampling = 2
+        self.gram = GramMatrix()
+        self.insp = Inspiration(ngf * 2 ** n_downsampling)
+        
+        # add multi-style decoder
+        model = []
+
+        mult = 2 ** n_downsampling
+        for i in range(n_blocks):       # add ResNet blocks
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3,
+                            padding=1, bias=use_bias),
+                  norm_layer(ngf * mult * 2),
+                  nn.ReLU(True)]
+        
+        n_upsampling = 3
+        for i in range(n_upsampling):  # add upsampling layers
+            mult = 2 ** (n_upsampling - i)
+            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                         kernel_size=3, stride=2,
+                                         padding=1, output_padding=1,
+                                         bias=use_bias),
+                      norm_layer(int(ngf * mult / 2)),
+                      nn.ReLU(True)]
+        model += [nn.ReflectionPad2d(3)]
+        model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model += [nn.Tanh()]
+
+        self.decoder = nn.Sequential(*model)
+
+    def forward(self, content_code, style_code):
+        """Standard forward"""
+        insp_out = self.insp(content_code, self.gram(style_code))
+        return self.decoder(insp_out)
+
+class TwoResnet2xGenerator(nn.Module):
+    """
+    Resnet-based generator that consists of Resnet blocks between a few downsampling/upsampling operations.
+
+    This is the modified generator of single texture synthesis.
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        """Construct a Resnet-based generator
+
+        Parameters:
+            input_nc (int)      -- the number of channels in input images
+            output_nc (int)     -- the number of channels in output images
+            ngf (int)           -- the number of filters in the last conv layer
+            norm_layer          -- normalization layer
+            use_dropout (bool)  -- if use dropout layers
+            n_blocks (int)      -- the number of ResNet blocks
+            padding_type (str)  -- the name of padding layer in conv layers: reflect | replicate | zero
+        """
+        assert(n_blocks >= 0)
+        super(TwoResnet2xGenerator, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                      norm_layer(ngf * mult * 2),
+                      nn.ReLU(True)]
+        self.encoder = nn.Sequential(*model)
+        
+        # content encoder
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 nn.InstanceNorm2d(ngf),
+                 nn.ReLU(True)]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                      nn.InstanceNorm2d(ngf * mult * 2),
+                      nn.ReLU(True)]
+        self.c_encoder = nn.Sequential(*model)
+        
+        # add multi-style encoder model
+        self.gram = GramMatrix()
+        self.insp = Inspiration(ngf * 2 ** n_downsampling)
+        
+        # add multi-style decoder
+        model = []
+
+        mult = 2 ** n_downsampling
+        for i in range(n_blocks):       # add ResNet blocks
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3,
+                            padding=1, bias=use_bias),
+                  norm_layer(ngf * mult * 2),
+                  nn.ReLU(True)]
+        
+        n_upsampling = 3
+        for i in range(n_upsampling):  # add upsampling layers
+            mult = 2 ** (n_upsampling - i)
+            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                         kernel_size=3, stride=2,
+                                         padding=1, output_padding=1,
+                                         bias=use_bias),
+                      norm_layer(int(ngf * mult / 2)),
+                      nn.ReLU(True)]
+        model += [nn.ReflectionPad2d(3)]
+        model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model += [nn.Tanh()]
+
+        self.decoder = nn.Sequential(*model)
+
+    def forward(self, content, style):
+        """Standard forward"""
+        encoded_style = self.encoder(style)
+        encoded_content = self.c_encoder(content)
         insp_out = self.insp(encoded_content, self.gram(encoded_style))
         return self.decoder(insp_out)
 
