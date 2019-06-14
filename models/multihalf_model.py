@@ -29,7 +29,7 @@ class MultihalfModel(BaseModel):
         if is_train:
             # parser.add_argument('--use_style', type=bool, default=True, help='use style loss')
             parser.add_argument('--lambda_L1', type=float, default=100, help='l1 loss lambda')
-            parser.add_argument('--lambda_style', type=float, default=5e3, help='style loss lambda')
+            parser.add_argument('--lambda_style', type=float, default=5, help='style loss lambda')
         return parser
 
     def __init__(self, opt):
@@ -70,13 +70,14 @@ class MultihalfModel(BaseModel):
             self.criterionL1 = torch.nn.L1Loss() # L1Loss between fake_B and real_B
             self.criterionBCE = torch.nn.BCELoss()
             # losses of feature map
-            self.style_layers = ['r11', 'r21', 'r31', 'r41', 'r51']
-            self.style_weights = [self.opt.lambda_style / (t * t) for t in [64, 128, 256, 512, 512]]
-            self.criterionStyle = [GramMSELoss().to(self.device)] * len(self.style_layers)
-            self.vgg = VGG()
-            self.vgg.load_state_dict(torch.load(os.getcwd() + '/models/' + 'vgg_conv.pth'))
-            self.set_requires_grad(self.vgg, False)
-            self.vgg = self.vgg.to(self.device)
+            if self.opt.lambda_style != 0:
+                self.style_layers = ['r11', 'r21', 'r31', 'r41', 'r51']
+                self.style_weights = [1.e3 / (t * t) for t in [64, 128, 256, 512, 512]]
+                self.criterionStyle = [GramMSELoss().to(self.device)] * len(self.style_layers)
+                self.vgg = VGG()
+                self.vgg.load_state_dict(torch.load(os.getcwd() + '/models/' + 'vgg_conv.pth'))
+                self.set_requires_grad(self.vgg, False)
+                self.vgg = self.vgg.to(self.device)
             # define and initialize optimizers. You can define one optimizer for each network.
             # If two networks are updated at the same time, you can use itertools.chain to group them. See cycle_gan_model.py for an example.
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -99,7 +100,6 @@ class MultihalfModel(BaseModel):
         if self.isTrain:
             self.real_ref = input['Ref'].to(self.device)  # get image data B
             self.real_label = input['label'].to(self.device)
-            self.real_label = torch.squeeze(self.real_label)
             self.image_paths = input['Ref_paths']  # get image paths
 
     def forward(self):
@@ -112,7 +112,7 @@ class MultihalfModel(BaseModel):
     def backward_D(self):
         """Calculate GAN loss for discriminator"""
         # calculate loss given the input and intermediate results
-        pred_fake, _ = self.netD(self.fake_ref.detach())
+        pred_fake, _ = self.netD(self.fake_ref.clone().detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
         pred_real, cT = self.netD(self.real_ref)
         self.loss_D_real = self.criterionGAN(pred_real, True)
@@ -120,24 +120,25 @@ class MultihalfModel(BaseModel):
         self.loss_D_C = self.criterionBCE(cT, self.real_label)
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5 + self.loss_D_C
         self.loss_D.backward()       # calculate gradients of network D w.r.t. loss_D
-
+    
     def backward_G(self):
-        """Calculate GAN loss for generator"""
-        # calculate loss given the gan generator
-        # first, calculate the gan generator's loss
-        pred_fake, cF = self.netD(self.fake_ref)
-        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
-        # print(cF, self.real_label)
-        self.loss_G_C = self.criterionBCE(cF, self.real_label)
-        # second, calculate the G l1 loss
+        if self.opt.lambda_style != 0:
+            style_targets = [GramMatrix()(A).detach() for A in self.vgg(self.real_ref, self.style_layers)]
+            out = self.vgg(self.fake_ref, self.style_layers)
+            layer_losses = [self.style_weights[a] * self.criterionStyle[a](A, style_targets[a]) for a, A in enumerate(out)]
+            # print(layer_losses)
+            self.loss_Style = sum(layer_losses) * self.opt.lambda_style
+            self.loss_Style.backward(retain_graph=True)
+
         self.loss_G_L1 = self.criterionL1(self.fake_ref, self.real_ref) * self.opt.lambda_L1
-        # then, calculate the style loss
-        style_out = self.vgg(self.fake_ref, self.style_layers)
-        style_targets = [GramMatrix()(layer_out).detach() for layer_out in self.vgg(self.real_ref, self.style_layers)]
-        self.loss_Style = sum([self.criterionStyle[i](i_out, style_targets[i]) * self.style_weights[i] for i, i_out in enumerate(style_out)])
-        # calculate the all loss
-        self.loss_G = self.loss_G_GAN + self.loss_G_L1 + self.loss_Style + self.loss_G_C
-        # finally, get the gradients for generators' parameters
+
+        # First, G(A) should fake the discriminator
+        pred_fake, cF = self.netD(self.fake_ref.clone())
+        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+
+        self.loss_G_C = self.criterionBCE(cF, self.real_label)
+        self.loss_G = self.loss_G_GAN + self.loss_G_C + self.loss_G_L1
+
         self.loss_G.backward()
         
     def optimize_parameters(self):
